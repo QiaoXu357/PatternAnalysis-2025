@@ -12,12 +12,32 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import warnings
 
+
+# Stochastic Depth / DropPath (per-sample) implementation
+def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+    if drop_prob == 0.0 or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+
+class DropPath(nn.Module):
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+
 warnings.filterwarnings('ignore')
 
 
 # Custom ConvNeXt-inspired Block Implementation
 class LayerNorm2d(nn.Module):
-    """Channel-first LayerNorm for images"""
+    """Channel-first LayerNorm for images (kept for compatibility, not used in block now)."""
 
     def __init__(self, normalized_shape, eps=1e-6):
         super().__init__()
@@ -34,32 +54,34 @@ class LayerNorm2d(nn.Module):
 
 
 class ConvNeXtBlock(nn.Module):
-    """ConvNeXt Block with depthwise conv and inverted bottleneck"""
+    """ConvNeXt Block with depthwise conv and inverted bottleneck (aligned with reference)."""
 
-    def __init__(self, dim, drop_path=0., layer_scale_init=1e-6):
+    def __init__(self, dim, drop_path=0.0, layer_scale_init=1e-6):
         super().__init__()
         self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
-        self.norm = LayerNorm2d(dim)
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
         self.pwconv1 = nn.Linear(dim, 4 * dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
 
-        self.gamma = nn.Parameter(layer_scale_init * torch.ones((dim)),
-                                  requires_grad=True) if layer_scale_init > 0 else None
-        self.drop_path = nn.Dropout2d(drop_path) if drop_path > 0. else nn.Identity()
+        self.gamma = (
+            nn.Parameter(layer_scale_init * torch.ones(dim)) if layer_scale_init > 0 else None
+        )
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
+        
     def forward(self, x):
-        input = x
+        shortcut = x
         x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)  # NCHW -> NHWC for LayerNorm/Linear
         x = self.norm(x)
-        x = x.permute(0, 2, 3, 1)  # [B, C, H, W] -> [B, H, W, C]
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
         if self.gamma is not None:
             x = self.gamma * x
-        x = x.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
-        x = input + self.drop_path(x)
+        x = x.permute(0, 3, 1, 2)  # NHWC -> NCHW
+        x = shortcut + self.drop_path(x)
         return x
 
 
@@ -138,7 +160,11 @@ class ADNIDataset(Dataset):
 
         # Load image
         if os.path.exists(img_path):
-            image = Image.open(img_path).convert('RGB')
+            try:
+                image = Image.open(img_path).convert('RGB')
+            except Exception:
+                # Fallback if file is unreadable
+                image = Image.new('RGB', (224, 224), color='black')
         else:
             # Create placeholder if image not found
             image = Image.new('RGB', (224, 224), color='black')
@@ -175,7 +201,7 @@ def prepare_data(data_dir, test_size=0.2, val_size=0.1):
         class_train_path = os.path.join(train_dir, class_name)
         if os.path.exists(class_train_path):
             for img_name in os.listdir(class_train_path):
-                if img_name.endswith(('.png', '.jpg', '.jpeg', '.nii', '.nii.gz')):
+                if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
                     image_paths_train.append(os.path.join(class_train_path, img_name))
                     labels_train.append(class_idx)
 
@@ -183,7 +209,7 @@ def prepare_data(data_dir, test_size=0.2, val_size=0.1):
         class_test_path = os.path.join(test_dir, class_name)
         if os.path.exists(class_test_path):
             for img_name in os.listdir(class_test_path):
-                if img_name.endswith(('.png', '.jpg', '.jpeg', '.nii', '.nii.gz')):
+                if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
                     image_paths_test.append(os.path.join(class_test_path, img_name))
                     labels_test.append(class_idx)
 
@@ -211,25 +237,31 @@ def prepare_data(data_dir, test_size=0.2, val_size=0.1):
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-def create_data_loaders(X_train, X_val, X_test, y_train, y_val, y_test, batch_size=32):
+class PerImageStandardize(object):
+    def __call__(self, t):
+        return (t - t.mean()) / (t.std() + 1e-6)
+
+
+def create_data_loaders(X_train, X_val, X_test, y_train, y_val, y_test, batch_size=32, num_workers=2, pin_memory=False):
     """Create data loaders with augmentation"""
 
-    # Data augmentation for training
+    # Data augmentation for training (MRI-friendly, avoid color jitter; grayscale + mild geometric aug)
     train_transform = transforms.Compose([
         transforms.Resize((256, 256)),
-        transforms.RandomCrop(224),
+        transforms.RandomResizedCrop(224, scale=(0.9, 1.0)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.RandomRotation(degrees=10),
+        transforms.Grayscale(num_output_channels=3),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        PerImageStandardize(),
     ])
 
     # No augmentation for validation/test
     test_transform = transforms.Compose([
         transforms.Resize((224, 224)),
+        transforms.Grayscale(num_output_channels=3),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        PerImageStandardize(),
     ])
 
     # Create datasets
@@ -238,9 +270,9 @@ def create_data_loaders(X_train, X_val, X_test, y_train, y_val, y_test, batch_si
     test_dataset = ADNIDataset(X_test, y_test, transform=test_transform)
 
     # Create loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     return train_loader, val_loader, test_loader
 
@@ -329,9 +361,9 @@ def main():
 
     # Hyperparameters
     BATCH_SIZE = 32
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 3e-4
     NUM_EPOCHS = 50
-    DATA_DIR = "path/to/adni/data"  # Update this path
+    DATA_DIR = "AD_NC"  # Your dataset folder (contains train/ and test/)
 
     # Prepare data
     print("Preparing data...")
@@ -340,7 +372,9 @@ def main():
 
     # Create data loaders
     train_loader, val_loader, test_loader = create_data_loaders(
-        X_train, X_val, X_test, y_train, y_val, y_test, BATCH_SIZE
+        X_train, X_val, X_test, y_train, y_val, y_test, BATCH_SIZE,
+        num_workers=0 if os.name == 'nt' else 2,  # safer default on Windows
+        pin_memory=(device.type == 'cuda')
     )
 
     # Initialize model
@@ -353,8 +387,8 @@ def main():
     ).to(device)
 
     # Loss and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.05)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
 
     # Training history
