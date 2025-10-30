@@ -6,6 +6,7 @@ from .modules import CustomConvNeXt
 
 
 def _predict_with_tta(model, images, tta: int = 1):
+    """Apply lightweight test-time augmentation (horizontal flip) if enabled."""
     logits = model(images)
     if tta <= 1:
         return logits
@@ -16,6 +17,7 @@ def _predict_with_tta(model, images, tta: int = 1):
 
 
 def evaluate_checkpoint(data_loader, checkpoint_path: str, model_kwargs: dict | None = None, device: torch.device | None = None, tta: int = 2, label_smoothing: float = 0.1):
+    """Load a checkpoint and compute loss/accuracy on a DataLoader."""
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = CustomConvNeXt(**(model_kwargs or {})).to(device)
     if not os.path.exists(checkpoint_path):

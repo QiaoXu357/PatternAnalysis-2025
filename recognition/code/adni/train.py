@@ -11,6 +11,10 @@ from .modules import CustomConvNeXt
 
 
 class ModelEMA:
+    """Exponential Moving Average (EMA) of model parameters.
+
+    Keeps a non-trainable copy of the model updated as ema = d*ema + (1-d)*model.
+    """
     def __init__(self, model: nn.Module, decay: float = 0.999):
         self.ema = self._clone_model(model)
         self.ema.eval()
@@ -33,6 +37,7 @@ class ModelEMA:
                 v.copy_(v * d + msd[k] * (1.0 - d))
 
 def train_epoch(model, loader, criterion, optimizer, device, grad_clip: float | None = 1.0, ema: ModelEMA | None = None):
+    """Run one training epoch and optionally update EMA."""
     model.train()
     running_loss = 0.0
     predictions, targets = [], []
@@ -57,6 +62,7 @@ def train_epoch(model, loader, criterion, optimizer, device, grad_clip: float | 
 
 
 def _predict_with_tta(model, images, tta: int = 1):
+    """Apply lightweight test-time augmentation (horizontal flip) if enabled."""
     logits = model(images)
     if tta <= 1:
         return logits
@@ -69,6 +75,7 @@ def _predict_with_tta(model, images, tta: int = 1):
 
 
 def evaluate(model, loader, criterion, device, tta: int = 1):
+    """Evaluate model over a DataLoader and compute loss/accuracy."""
     model.eval()
     running_loss = 0.0
     predictions, targets = [], []
@@ -87,6 +94,7 @@ def evaluate(model, loader, criterion, device, tta: int = 1):
 
 
 def plot_training_history(train_losses, val_losses, train_accs, val_accs, out_path: str):
+    """Plot loss and accuracy curves and save to a file."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     ax1.plot(train_losses, label='Train Loss')
     ax1.plot(val_losses, label='Val Loss')
@@ -106,6 +114,7 @@ def plot_training_history(train_losses, val_losses, train_accs, val_accs, out_pa
 
 
 def plot_confusion_matrix(cm, labels, out_path: str):
+    """Render and save a confusion matrix heatmap."""
     plt.figure(figsize=(8, 6))
     plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
     plt.title('Confusion Matrix')
@@ -137,6 +146,11 @@ def train(
     device: torch.device | None = None,
     output_dir: str = ".",
 ):
+    """Train the model end-to-end and report final test metrics.
+
+    Uses linear warmup followed by cosine LR schedule, label smoothing,
+    gradient clipping, EMA validation, and optional TTA at test time.
+    """
     os.makedirs(output_dir, exist_ok=True)
     train_loader, val_loader, test_loader = data_loaders
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')

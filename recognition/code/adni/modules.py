@@ -3,6 +3,7 @@ import torch.nn as nn
 
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+    """Stochastic depth per sample (when applied in main path of residual blocks)."""
     if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
@@ -13,6 +14,7 @@ def drop_path(x, drop_prob: float = 0.0, training: bool = False):
 
 
 class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) wrapper as a module."""
     def __init__(self, drop_prob: float = 0.0):
         super().__init__()
         self.drop_prob = drop_prob
@@ -22,6 +24,7 @@ class DropPath(nn.Module):
 
 
 class LayerNorm2d(nn.Module):
+    """LayerNorm operating on channel dimension for 2D feature maps."""
     def __init__(self, normalized_shape, eps=1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(normalized_shape))
@@ -37,6 +40,7 @@ class LayerNorm2d(nn.Module):
 
 
 class ConvNeXtBlock(nn.Module):
+    """ConvNeXt-style block with depthwise conv + MLP and residual path."""
     def __init__(self, dim, drop_path=0.0, layer_scale_init=1e-6):
         super().__init__()
         self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
@@ -65,6 +69,7 @@ class ConvNeXtBlock(nn.Module):
 
 
 class CustomConvNeXt(nn.Module):
+    """A compact ConvNeXt variant for binary classification."""
     def __init__(
         self,
         in_chans: int = 3,
@@ -118,4 +123,3 @@ class CustomConvNeXt(nn.Module):
         x = self.norm(x)
         x = self.head(x)
         return x
-

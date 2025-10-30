@@ -8,6 +8,12 @@ from sklearn.model_selection import train_test_split
 
 
 class ADNIDataset(Dataset):
+    """Image classification dataset for AD/NC splits.
+
+    Expects lists of image file paths and integer labels; applies an optional
+    torchvision transform per sample.
+    """
+
     def __init__(self, image_paths, labels, transform=None):
         self.image_paths = image_paths
         self.labels = labels
@@ -18,7 +24,7 @@ class ADNIDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        # 此处不再用黑图填充，若读取失败交由上游过滤
+        # Do not pad with a black image here; upstream filtering handles failures.
         image = Image.open(img_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
@@ -27,6 +33,8 @@ class ADNIDataset(Dataset):
 
 
 class PerImageStandardize:
+    """Normalize each image tensor to zero mean and unit variance."""
+
     def __call__(self, tensor):
         mean = tensor.mean()
         std = tensor.std()
@@ -34,6 +42,7 @@ class PerImageStandardize:
 
 
 def _is_image_ok(path: str) -> bool:
+    """Return True if PIL can open and verify the file, else False."""
     try:
         with Image.open(path) as im:
             im.verify()
@@ -43,6 +52,12 @@ def _is_image_ok(path: str) -> bool:
 
 
 def prepare_data(data_dir: str, test_size: float = 0.2, val_size: float = 0.1):
+    """Build path/label lists and split into train/val/test.
+
+    Expects directory structure:
+      data_dir/train/{NC,AD}
+      data_dir/test/{NC,AD}
+    """
     image_paths_train, labels_train = [], []
     image_paths_test, labels_test = [], []
     class_map = {'NC': 0, 'AD': 1}
@@ -76,6 +91,7 @@ def prepare_data(data_dir: str, test_size: float = 0.2, val_size: float = 0.1):
                         skipped_test += 1
 
     if len(image_paths_train) == 0 and len(image_paths_test) == 0:
+        # Fallback to synthetic lists to keep the pipeline runnable without data
         n_samples = 1000
         n_test = int(n_samples * test_size)
         n_train_temp = n_samples - n_test
@@ -108,7 +124,8 @@ def create_data_loaders(
     num_workers: int = 2,
     use_weighted_sampler: str = "auto",  # 'auto'|'on'|'off'
 ):
-    # 训练增强：去掉色彩抖动，采用更适合医学图像的增强
+    """Construct DataLoaders with transforms and optional class balancing."""
+    # Training augmentation: remove strong color jitter; prefer medical-friendly ops.
     train_transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=3),
         transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
@@ -119,7 +136,7 @@ def create_data_loaders(
         transforms.RandomErasing(p=0.25, scale=(0.02, 0.1)),
     ])
 
-    # 验证/测试：确定性预处理
+    # Validation/Test: deterministic preprocessing
     test_transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=3),
         transforms.Resize((224, 224)),
@@ -131,7 +148,7 @@ def create_data_loaders(
     val_dataset = ADNIDataset(X_val, y_val, transform=test_transform)
     test_dataset = ADNIDataset(X_test, y_test, transform=test_transform)
 
-    # 采样策略：按需使用 WeightedRandomSampler
+    # Sampling strategy: use WeightedRandomSampler on demand
     sampler = None
     if use_weighted_sampler in ("auto", "on"):
         class_counts = {}
@@ -158,3 +175,4 @@ def create_data_loaders(
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     return train_loader, val_loader, test_loader
+

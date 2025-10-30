@@ -8,11 +8,12 @@ from adni.predict import evaluate_checkpoint
 
 
 def parse_args():
+    """Parse command-line arguments for training and evaluation."""
     parser = argparse.ArgumentParser(description="AD vs NC classifier CLI")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # train
+    # Train subcommand
     p_train = subparsers.add_parser("train", help="Train model")
     p_train.add_argument("--data-dir", default="AD_NC", help="Dataset root containing train/ and test/")
     p_train.add_argument("--epochs", type=int, default=50)
@@ -29,7 +30,7 @@ def parse_args():
     p_train.add_argument("--output-dir", default=".")
     p_train.add_argument("--weighted-sampler", choices=["auto","on","off"], default="auto")
 
-    # eval
+    # Eval subcommand
     p_eval = subparsers.add_parser("eval", help="Evaluate checkpoint")
     p_eval.add_argument("--data-dir", default="AD_NC")
     p_eval.add_argument("--batch-size", type=int, default=32)
@@ -44,6 +45,7 @@ def parse_args():
 
 
 def main():
+    """Entry point for the CLI; dispatches to train/eval routines."""
     args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
