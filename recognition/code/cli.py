@@ -4,7 +4,7 @@ import torch
 
 from adni.dataset import prepare_data, create_data_loaders
 from adni.train import train as train_run
-from adni.predict import evaluate_checkpoint
+from adni.predict import evaluate_checkpoint, predict_image
 
 
 def parse_args():
@@ -40,6 +40,15 @@ def parse_args():
     p_eval.add_argument("--drop-path-rate", type=float, default=0.2)
     p_eval.add_argument("--dims", type=int, nargs=4, default=[96, 192, 384, 768])
     p_eval.add_argument("--depths", type=int, nargs=4, default=[3, 3, 9, 3])
+
+    # Predict subcommand (single image)
+    p_pred = subparsers.add_parser("predict", help="Predict a single image")
+    p_pred.add_argument("--image", required=True, help="Path to the input image")
+    p_pred.add_argument("--checkpoint", required=True, help="Path to model checkpoint (.pth)")
+    p_pred.add_argument("--tta", type=int, default=2, help="TTA passes (2=orig+flip)")
+    p_pred.add_argument("--drop-path-rate", type=float, default=0.2)
+    p_pred.add_argument("--dims", type=int, nargs=4, default=[96, 192, 384, 768])
+    p_pred.add_argument("--depths", type=int, nargs=4, default=[3, 3, 9, 3])
 
     return parser.parse_args()
 
@@ -99,6 +108,25 @@ def main():
         )
         print(f"Accuracy: {metrics['acc']:.4f}, Loss: {metrics['loss']:.4f}")
         print(metrics['report'])
+
+    elif args.command == "predict":
+        result = predict_image(
+            image_path=args.image,
+            checkpoint_path=args.checkpoint,
+            model_kwargs={
+                'in_chans': 3,
+                'num_classes': 2,
+                'depths': args.depths,
+                'dims': args.dims,
+                'drop_path_rate': args.drop_path_rate,
+            },
+            device=device,
+            tta=args.tta,
+        )
+        print(f"Predicted: {result['label']} (index={result['index']})")
+        print("Probabilities:")
+        for k, v in result['probs'].items():
+            print(f"  {k}: {v:.4f}")
 
 
 if __name__ == "__main__":
